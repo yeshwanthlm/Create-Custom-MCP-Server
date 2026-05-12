@@ -6,7 +6,7 @@ This guide walks you through hosting `mcp_server.py` persistently on an Ubuntu E
 
 ## Table of Contents
 
-1. [Option A: Automated Setup via EC2 User Data (Recommended)](#option-a-automated-setup-via-ec2-user-data-recommended)
+1. [Option A: Automated Setup Script (Recommended)](#option-a-automated-setup-script-recommended)
 2. [Option B: Manual Step-by-Step Setup](#option-b-manual-step-by-step-setup)
    - [Launch & Connect to EC2](#1-launch--connect-to-ec2)
    - [Install Dependencies](#2-install-dependencies)
@@ -23,141 +23,99 @@ This guide walks you through hosting `mcp_server.py` persistently on an Ubuntu E
 
 ---
 
-## Option A: Automated Setup via EC2 User Data (Recommended)
+## Option A: Automated Setup Script (Recommended)
 
-You can fully automate the entire server setup by pasting the script below into the **User Data** field when launching your EC2 instance. It runs once on first boot and sets everything up — no SSH required for initial configuration.
+A single script — `setup.sh` — handles the entire setup. Run it once after SSHing into a fresh Ubuntu EC2 instance.
 
-### How to use it
+### Step 1 — Launch an EC2 instance
 
 1. Go to **AWS Console → EC2 → Launch Instance**
 2. Choose **Ubuntu Server 22.04 LTS**
-3. Under **Advanced Details → User Data**, paste the script below
-4. Under **Security Group**, open these ports:
+3. Select an instance type (e.g., `t3.micro`)
+4. Open these Security Group inbound rules:
 
-   | Port | Protocol | Source       | Purpose             |
-   |------|----------|--------------|---------------------|
-   | 22   | TCP      | Your IP only | SSH access          |
-   | 80   | TCP      | 0.0.0.0/0    | HTTP (Nginx)        |
-   | 443  | TCP      | 0.0.0.0/0    | HTTPS (optional)    |
+   | Port | Protocol | Source       | Purpose          |
+   |------|----------|--------------|------------------|
+   | 22   | TCP      | Your IP only | SSH access       |
+   | 80   | TCP      | 0.0.0.0/0    | HTTP (Nginx)     |
+   | 443  | TCP      | 0.0.0.0/0    | HTTPS (optional) |
 
    > **Do not open port 8000 publicly.** Nginx proxies to it internally.
 
-5. Launch the instance. Setup completes automatically within ~2 minutes of boot.
-
-### User Data Script
+### Step 2 — SSH in and run the setup script
 
 ```bash
-#!/bin/bash
+# Connect to your instance
+ssh -i your-key.pem ubuntu@<your-ec2-public-ip>
 
-# ── Log everything to /var/log/mcp-setup.log ──────────────────────────────────
-LOG=/var/log/mcp-setup.log
-log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG"; }
+# Clone the repo
+git clone https://github.com/yeshwanthlm/Create-Custom-MCP-Server.git
+cd Create-Custom-MCP-Server
 
-log "=== MCP Server Setup Started ==="
-
-# ── System update and package install ─────────────────────────────────────────
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -y >> "$LOG" 2>&1
-apt-get upgrade -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" >> "$LOG" 2>&1
-apt-get install -y python3 python3-pip python3-venv git nginx >> "$LOG" 2>&1
-log "Packages installed"
-
-# ── Clone the repo ─────────────────────────────────────────────────────────────
-git clone https://github.com/yeshwanthlm/Create-Custom-MCP-Server.git /opt/mcp-server >> "$LOG" 2>&1
-chown -R ubuntu:ubuntu /opt/mcp-server
-log "Repo cloned"
-
-# ── Set up Python virtualenv and install dependencies ─────────────────────────
-sudo -u ubuntu python3 -m venv /opt/mcp-server/.venv >> "$LOG" 2>&1
-sudo -u ubuntu /opt/mcp-server/.venv/bin/pip install --upgrade pip >> "$LOG" 2>&1
-sudo -u ubuntu /opt/mcp-server/.venv/bin/pip install -r /opt/mcp-server/requirements.txt >> "$LOG" 2>&1
-log "Python dependencies installed"
-
-# ── Create systemd service ─────────────────────────────────────────────────────
-cat > /etc/systemd/system/mcp-server.service << 'SYSTEMD'
-[Unit]
-Description=Custom MCP Calculator Server
-After=network.target
-
-[Service]
-Type=simple
-User=ubuntu
-WorkingDirectory=/opt/mcp-server
-ExecStart=/opt/mcp-server/.venv/bin/python mcp_server.py
-Restart=on-failure
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-NoNewPrivileges=true
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
-SYSTEMD
-
-systemctl daemon-reload >> "$LOG" 2>&1
-systemctl enable mcp-server >> "$LOG" 2>&1
-systemctl start mcp-server >> "$LOG" 2>&1
-log "systemd service started"
-
-# ── Get the public IP of this instance (IMDSv2) ───────────────────────────────
-TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
-PUBLIC_IP=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/public-ipv4)
-log "Public IP: $PUBLIC_IP"
-
-# ── Configure Nginx as reverse proxy ──────────────────────────────────────────
-# Note: all Nginx variables ($remote_addr etc.) must be escaped with \$
-# Use a quoted heredoc tag (NGINX) to prevent shell from expanding them
-cat > /etc/nginx/sites-available/mcp-server << NGINX
-server {
-    listen 80;
-    server_name ${PUBLIC_IP};
-
-    location /mcp {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_http_version 1.1;
-        proxy_set_header Host localhost;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_buffering off;
-        proxy_cache off;
-        proxy_read_timeout 3600s;
-    }
-}
-NGINX
-
-# Enable the site and remove the default
-ln -sf /etc/nginx/sites-available/mcp-server /etc/nginx/sites-enabled/mcp-server
-rm -f /etc/nginx/sites-enabled/default
-
-nginx -t >> "$LOG" 2>&1
-systemctl enable nginx >> "$LOG" 2>&1
-systemctl restart nginx >> "$LOG" 2>&1
-log "Nginx configured and started"
-
-log "=== MCP Server Setup Complete ==="
-log "=== Server available at: http://${PUBLIC_IP}/mcp ==="
+# Run the setup script
+chmod +x setup.sh
+sudo ./setup.sh
 ```
 
-### Verify the setup after launch
+The script runs interactively with coloured output and shows progress at each step. It takes about 2–3 minutes on a fresh instance.
 
-SSH in and check:
+### What the script does
+
+| Step | Action |
+|------|--------|
+| 1 | Installs Python, Git, Nginx |
+| 2 | Clones the repo to `/opt/mcp-server` |
+| 3 | Creates a Python virtualenv and installs dependencies |
+| 4 | Creates and starts a `systemd` service |
+| 5 | Detects the EC2 public IP (IMDSv2 with fallbacks) |
+| 6 | Configures Nginx as a reverse proxy and starts it |
+
+### Expected output
+
+```
+==============================================
+   MCP Server Setup — Ubuntu EC2
+==============================================
+
+[→] Step 1/6 — Installing system packages...
+[✔] System packages installed
+[→] Step 2/6 — Cloning repository...
+[✔] Repository ready at /opt/mcp-server
+[→] Step 3/6 — Setting up Python virtualenv...
+[✔] Python dependencies installed
+[→] Step 4/6 — Creating systemd service...
+[✔] systemd service 'mcp-server' is running
+[→] Step 5/6 — Detecting public IP...
+[✔] Public IP: 1.2.3.4
+[→] Step 6/6 — Configuring Nginx...
+[✔] Nginx is running
+
+==============================================
+   Setup Complete!
+==============================================
+
+  MCP Server URL : http://1.2.3.4/mcp
+
+  Useful commands:
+    sudo systemctl status mcp-server
+    sudo journalctl -u mcp-server -f
+    sudo systemctl restart mcp-server
+
+  Test the endpoint (expect 406 — means it's working):
+    curl -v http://1.2.3.4/mcp
+
+  Connect from your notebook:
+    streamablehttp_client("http://1.2.3.4/mcp")
+```
+
+### Re-running the script
+
+The script is idempotent — safe to re-run after a `git pull` to pick up changes:
 
 ```bash
-# Check setup log
-cat /var/log/mcp-setup.log
-
-# Check MCP server status
-sudo systemctl status mcp-server
-
-# Check Nginx status
-sudo systemctl status nginx
-
-# Confirm port 8000 is listening
-ss -tlnp | grep 8000
-
-# Test the endpoint (expect 406 Not Acceptable — that means it's working)
-curl -v http://localhost:8000/mcp
+cd Create-Custom-MCP-Server
+git pull
+sudo ./setup.sh
 ```
 
 ---
@@ -200,8 +158,7 @@ sudo apt install python3 python3-pip python3-venv git nginx -y
 ### 3. Clone the Repo & Set Up Virtualenv
 
 ```bash
-cd /opt
-sudo git clone https://github.com/yeshwanthlm/Create-Custom-MCP-Server.git mcp-server
+sudo git clone https://github.com/yeshwanthlm/Create-Custom-MCP-Server.git /opt/mcp-server
 sudo chown -R ubuntu:ubuntu /opt/mcp-server
 
 cd /opt/mcp-server
@@ -279,10 +236,10 @@ sudo journalctl -u mcp-server -b        # Since last boot
 
 ### 7. Set Up Nginx as a Reverse Proxy
 
-> **Important Nginx config notes (learned from production):**
-> - Use `location /mcp` (prefix match, no trailing slash) — not `location /mcp/`
-> - Use `proxy_pass http://127.0.0.1:8000` (no path suffix) so Nginx forwards the original path as-is
-> - Set `proxy_set_header Host localhost` — FastMCP rejects requests with an IP in the Host header (`421 Misdirected Request`)
+> **Important Nginx config notes:**
+> - Use `location /mcp` (prefix match, no trailing slash)
+> - Use `proxy_pass http://127.0.0.1:8000` with no path suffix — Nginx forwards the original path as-is
+> - Set `proxy_set_header Host 127.0.0.1` — FastMCP validates the Host header and rejects anything it doesn't recognise
 > - Set `proxy_buffering off` — required for streamable-http / SSE to work correctly
 
 ```bash
@@ -297,7 +254,7 @@ server {
     location /mcp {
         proxy_pass http://127.0.0.1:8000;
         proxy_http_version 1.1;
-        proxy_set_header Host localhost;
+        proxy_set_header Host 127.0.0.1;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_buffering off;
@@ -309,12 +266,12 @@ server {
 
 ```bash
 sudo ln -s /etc/nginx/sites-available/mcp-server /etc/nginx/sites-enabled/
-sudo rm -f /etc/nginx/sites-enabled/default   # remove default site
+sudo rm -f /etc/nginx/sites-enabled/default
 sudo nginx -t
 sudo systemctl restart nginx
 ```
 
-**Verify it's working** (expect `406 Not Acceptable` — this is correct, it means FastMCP is reachable):
+**Verify** (expect `406 Not Acceptable` — means FastMCP is reachable):
 
 ```bash
 curl -v http://<your-ec2-public-ip>/mcp
@@ -329,13 +286,7 @@ curl -v http://<your-ec2-public-ip>/mcp
 ```bash
 sudo apt install certbot python3-certbot-nginx -y
 sudo certbot --nginx -d your-domain.com
-```
-
-Certbot will obtain a certificate, update Nginx to redirect HTTP → HTTPS, and set up auto-renewal.
-
-```bash
-# Verify auto-renewal
-sudo certbot renew --dry-run
+sudo certbot renew --dry-run   # verify auto-renewal
 ```
 
 ---
@@ -346,7 +297,7 @@ sudo certbot renew --dry-run
 cd /opt/mcp-server
 git pull
 source .venv/bin/activate
-pip install -r requirements.txt       # only needed if requirements changed
+pip install -r requirements.txt   # only if requirements changed
 sudo systemctl restart mcp-server
 sudo systemctl status mcp-server
 ```
@@ -355,7 +306,7 @@ sudo systemctl status mcp-server
 
 ## Connecting from Your Client
 
-Once the server is running, use this in your notebook or script. Note: **no trailing slash** on the URL.
+Use this in your notebook or script. **No trailing slash** on the URL.
 
 ```python
 from mcp.client.streamable_http import streamablehttp_client
@@ -384,7 +335,7 @@ with mcp_client:
 | Install app under `/opt` with a virtualenv | Isolated dependencies, clean separation from system Python |
 | Use Nginx as a reverse proxy | Hides internal port, handles TLS, enables rate limiting |
 | Keep port 8000 closed in Security Group | Only Nginx (on localhost) should reach FastMCP directly |
-| `proxy_set_header Host localhost` | Prevents FastMCP `421 Misdirected Request` errors |
+| `proxy_set_header Host 127.0.0.1` | FastMCP validates Host header — must match its bound address |
 | `location /mcp` prefix match in Nginx | Covers all MCP sub-paths including session IDs |
 | `proxy_pass` without a path suffix | Nginx forwards the original path as-is, avoids redirect loops |
 | No trailing slash in client URL | FastMCP redirects `/mcp/` → `/mcp`; MCP client doesn't follow redirects |
@@ -407,8 +358,8 @@ Internet
     ▼
 [ Nginx (reverse proxy) ]
   server_name: EC2 public IP
-  location /mcp → proxy_pass localhost:8000
-  Host header rewritten to: localhost
+  location /mcp → proxy_pass 127.0.0.1:8000
+  Host header rewritten to: 127.0.0.1
     │
     ▼ 127.0.0.1:8000
 [ FastMCP Server (mcp_server.py) ]
