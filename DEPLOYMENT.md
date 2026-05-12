@@ -48,15 +48,16 @@ You can fully automate the entire server setup by pasting the script below into 
 
 ```bash
 #!/bin/bash
-set -e
 
 # ── Log everything to /var/log/mcp-setup.log ──────────────────────────────────
 exec > >(tee /var/log/mcp-setup.log | logger -t mcp-setup) 2>&1
 echo "=== MCP Server Setup Started: $(date) ==="
 
 # ── System update and package install ─────────────────────────────────────────
+# DEBIAN_FRONTEND=noninteractive prevents debconf prompts from blocking the script
+export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get upgrade -y
+apt-get upgrade -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
 apt-get install -y python3 python3-pip python3-venv git nginx
 
 # ── Clone the repo ─────────────────────────────────────────────────────────────
