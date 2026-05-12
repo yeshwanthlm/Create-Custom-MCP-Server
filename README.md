@@ -1,6 +1,6 @@
 # Create a Custom MCP Server with Strands Agents
 
-This project demonstrates how to build a custom **Model Context Protocol (MCP)** server and connect it to a [Strands Agents](https://strandsagents.com/) AI agent. It uses a simple calculator as the example tool, but the same pattern applies to any custom functionality you want to expose to an AI agent.
+This project demonstrates how to build a custom **Model Context Protocol (MCP)** server and connect it to a [Strands Agents](https://strandsagents.com/) AI agent. It uses a simple calculator as the example tool (not limitted to), but the same pattern applies to any custom functionality you want to expose to an AI agent.
 
 ---
 
