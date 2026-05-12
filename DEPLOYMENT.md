@@ -50,29 +50,31 @@ You can fully automate the entire server setup by pasting the script below into 
 #!/bin/bash
 
 # ── Log everything to /var/log/mcp-setup.log ──────────────────────────────────
-exec > >(tee /var/log/mcp-setup.log | logger -t mcp-setup) 2>&1
-echo "=== MCP Server Setup Started: $(date) ==="
+LOG=/var/log/mcp-setup.log
+log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG"; }
+
+log "=== MCP Server Setup Started ==="
 
 # ── System update and package install ─────────────────────────────────────────
-# DEBIAN_FRONTEND=noninteractive prevents debconf prompts from blocking the script
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -y
-apt-get upgrade -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
-apt-get install -y python3 python3-pip python3-venv git nginx
+apt-get update -y >> "$LOG" 2>&1
+apt-get upgrade -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" >> "$LOG" 2>&1
+apt-get install -y python3 python3-pip python3-venv git nginx >> "$LOG" 2>&1
+log "Packages installed"
 
 # ── Clone the repo ─────────────────────────────────────────────────────────────
-cd /opt
-git clone https://github.com/yeshwanthlm/Create-Custom-MCP-Server.git mcp-server
+git clone https://github.com/yeshwanthlm/Create-Custom-MCP-Server.git /opt/mcp-server >> "$LOG" 2>&1
 chown -R ubuntu:ubuntu /opt/mcp-server
+log "Repo cloned"
 
 # ── Set up Python virtualenv and install dependencies ─────────────────────────
-cd /opt/mcp-server
-sudo -u ubuntu python3 -m venv .venv
-sudo -u ubuntu .venv/bin/pip install --upgrade pip
-sudo -u ubuntu .venv/bin/pip install -r requirements.txt
+sudo -u ubuntu python3 -m venv /opt/mcp-server/.venv >> "$LOG" 2>&1
+sudo -u ubuntu /opt/mcp-server/.venv/bin/pip install --upgrade pip >> "$LOG" 2>&1
+sudo -u ubuntu /opt/mcp-server/.venv/bin/pip install -r /opt/mcp-server/requirements.txt >> "$LOG" 2>&1
+log "Python dependencies installed"
 
 # ── Create systemd service ─────────────────────────────────────────────────────
-cat > /etc/systemd/system/mcp-server.service << 'EOF'
+cat > /etc/systemd/system/mcp-server.service << 'SYSTEMD'
 [Unit]
 Description=Custom MCP Calculator Server
 After=network.target
@@ -91,17 +93,21 @@ PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
-EOF
+SYSTEMD
 
-systemctl daemon-reload
-systemctl enable mcp-server
-systemctl start mcp-server
+systemctl daemon-reload >> "$LOG" 2>&1
+systemctl enable mcp-server >> "$LOG" 2>&1
+systemctl start mcp-server >> "$LOG" 2>&1
+log "systemd service started"
 
 # ── Get the public IP of this instance ────────────────────────────────────────
 PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)
+log "Public IP: $PUBLIC_IP"
 
 # ── Configure Nginx as reverse proxy ──────────────────────────────────────────
-cat > /etc/nginx/sites-available/mcp-server << EOF
+# Note: all Nginx variables ($remote_addr etc.) must be escaped with \$
+# Use a quoted heredoc tag (NGINX) to prevent shell from expanding them
+cat > /etc/nginx/sites-available/mcp-server << NGINX
 server {
     listen 80;
     server_name ${PUBLIC_IP};
@@ -117,18 +123,19 @@ server {
         proxy_read_timeout 3600s;
     }
 }
-EOF
+NGINX
 
 # Enable the site and remove the default
 ln -sf /etc/nginx/sites-available/mcp-server /etc/nginx/sites-enabled/mcp-server
 rm -f /etc/nginx/sites-enabled/default
 
-nginx -t
-systemctl enable nginx
-systemctl restart nginx
+nginx -t >> "$LOG" 2>&1
+systemctl enable nginx >> "$LOG" 2>&1
+systemctl restart nginx >> "$LOG" 2>&1
+log "Nginx configured and started"
 
-echo "=== MCP Server Setup Complete: $(date) ==="
-echo "=== Server available at: http://${PUBLIC_IP}/mcp ==="
+log "=== MCP Server Setup Complete ==="
+log "=== Server available at: http://${PUBLIC_IP}/mcp ==="
 ```
 
 ### Verify the setup after launch
